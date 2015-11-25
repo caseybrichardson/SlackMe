@@ -1,0 +1,66 @@
+#!/usr/bin/env python
+
+# Local imports
+import os
+import sys
+import subprocess
+import json
+from datetime import datetime
+
+# HTTP that doesn't suck
+import requests
+
+# The webhook for our slackbot
+webhook = os.environ.get("SLACK_WEBHOOK")
+
+# Display help for this script
+def display_help():
+	pass
+
+# Makes a payload to send to Slack
+def post_slack_api(command, output, delta):
+	# Find our various time components
+	hours, remainder = divmod(delta.seconds, 3600)
+	minutes, seconds = divmod(remainder, 60)
+	milliseconds = delta.microseconds / 1000 - delta.seconds
+
+	# Build time string
+	time = str(hours).zfill(2) + ":" + str(minutes).zfill(2) + ":" + str(seconds).zfill(2) + "." + str(milliseconds).zfill(3)
+
+	# Construct JSON payload
+	payload = json.dumps({"username": "SlackMe-Bot", 
+			   			  "icon_emoji": ":ghost:",
+			   			  "text": "The command `" + command + "` took *" + time + "* to execute. Finished with exit code *" + str(output) + "*."})
+
+	# Execute our POST request
+	requests.post(webhook, data=payload)
+
+def main():
+	# If the webhook hasn't been set then exit
+	if webhook == None:
+		print("SLACK_WEBHOOK not set, exiting.")
+		sys.exit(1)
+
+	# If there's no command input then exit
+	if len(sys.argv) == 1:
+		print("No command to execute, exiting.")
+		sys.exit(1)
+
+	command = sys.argv[1:]
+	print("Executing: " + str(" ".join(command)) + "")
+
+	# Mark the time we're starting
+	beforeTime = datetime.utcnow()
+
+	# Execute the command and wait for it to finish
+	proc = subprocess.Popen(command)
+	proc.wait()
+
+	# The time we're finishing
+	afterTime = datetime.utcnow()
+
+	# Post to the Slack API at our designated webhook
+	post_slack_api(" ".join(command), proc.returncode, afterTime - beforeTime)
+
+if __name__ == '__main__':
+	main()
