@@ -6,6 +6,7 @@ import sys
 import subprocess
 import json
 from datetime import datetime
+from argparse import ArgumentParser
 
 # HTTP that doesn't suck
 import requests
@@ -13,29 +14,69 @@ import requests
 # The webhook for our slackbot
 webhook = os.environ.get("SLACK_WEBHOOK")
 
+# Setup arg parsing
+def parse_args():
+	parser = ArgumentParser(description="This command allows you to fire-and-forget commands that take forever to run and will notify you via Slack when the command completes.")
+
+	# Add args to parser
+	parser.add_argument("-u", "--user", dest="userList", metavar="@", default=[], action="append", help="a user to tag in the post")
+
+	contactMethod = parser.add_mutually_exclusive_group()
+	contactMethod.add_argument("-c", "--channel", dest="channel", metavar="#", default="", nargs=1, action="store", help="a channel to post in")
+	contactMethod.add_argument("-m", "--message-direct", dest="direct", action="store_true", help="directly message specified users")
+
+	return parser.parse_known_args()
+
 # Display help for this script
 def display_help():
 	pass
 
 # Makes a payload to send to Slack
-def post_slack_api(command, output, delta):
-	# Find our various time components
-	hours, remainder = divmod(delta.seconds, 3600)
-	minutes, seconds = divmod(remainder, 60)
-	milliseconds = delta.microseconds / 1000 - delta.seconds
+def post_slack_api(command, output, delta, users=[], channel="", direct=False, errors=False):
+	if direct and len(users) > 1:
+		for user in users:
+			print("Direct messaging user: " + user)
+			post_slack_api(command, output, delta, [user], channel, direct, errors)
+	else:
+		# Find our various time components
+		hours, remainder = divmod(delta.seconds, 3600)
+		minutes, seconds = divmod(remainder, 60)
+		milliseconds = delta.microseconds / 1000 - delta.seconds
 
-	# Build time string
-	time = str(hours).zfill(2) + ":" + str(minutes).zfill(2) + ":" + str(seconds).zfill(2) + "." + str(milliseconds).zfill(3)
+		# Build time string
+		time = str(hours).zfill(2) + ":" + str(minutes).zfill(2) + ":" + str(seconds).zfill(2) + "." + str(milliseconds).zfill(3)
+		
+		# Build user mention string
+		validated = [(user if user[0] == "@" else ("@" + user)) for user in users]
+		usermentions = ", ".join(validated)
 
-	# Construct JSON payload
-	payload = json.dumps({"username": "SlackMe-Bot", 
-			   			  "icon_emoji": ":ghost:",
-			   			  "text": "The command `" + command + "` took *" + time + "* to execute. Finished with exit code *" + str(output) + "*."})
+		# Build message string depending on whether or not we had an error
+		textOutput = ""
+		if not errors:
+			textOutput = "The command `" + command + "` took *" + time + "* to execute. Finished with exit code *" + str(output) + "*."
+		else:
+			textOutput = "The command `" + command + "` failed after *" + time + "*. No exit code available."
 
-	# Execute our POST request
-	requests.post(webhook, data=payload)
+		# Construct JSON payload
+		payload = {"username": "SlackMe-Bot", 
+	   			   "icon_emoji": ":shit:",
+	   			   "link_names": 1,
+	   			   "text": (usermentions + ": " if len(users) != 0 and not direct else "") + textOutput}
+
+	   	if direct:
+	   		payload["channel"] = validated[0]
+	   	elif channel != "":
+	   		payload["channel"] = "#" + channel[0]
+
+	   	payload = json.dumps(payload)
+
+		# Execute our POST request
+		r = requests.post(webhook, data=payload)
 
 def main():
+	# Get the parsed arguments, as well as the remainder of the arguments that didn't fit our parser (our command most likely)
+	args, leftover = parse_args()
+
 	# If the webhook hasn't been set then exit
 	if webhook == None:
 		print("SLACK_WEBHOOK not set, exiting.")
@@ -46,21 +87,30 @@ def main():
 		print("No command to execute, exiting.")
 		sys.exit(1)
 
-	command = sys.argv[1:]
-	print("Executing: " + str(" ".join(command)) + "")
+	command = leftover
+	commandStr = " ".join(command)
+	print("Executing: " + commandStr + "")
 
 	# Mark the time we're starting
 	beforeTime = datetime.utcnow()
 
-	# Execute the command and wait for it to finish
-	proc = subprocess.Popen(command)
-	proc.wait()
+	errorFlag = False
+	process = None
+	# Execute the command and wait for it to finish (if possible)
+	try: 
+		process = subprocess.Popen(command)
+		process.wait()
+	except OSError:
+		print("Could not find command.")
+		errorFlag = True
 
 	# The time we're finishing
 	afterTime = datetime.utcnow()
 
 	# Post to the Slack API at our designated webhook
-	post_slack_api(" ".join(command), proc.returncode, afterTime - beforeTime)
+	output = process.returncode if process != None else -1
+	deltaT = afterTime - beforeTime
+	post_slack_api(commandStr, output, deltaT, users=args.userList, channel=args.channel, direct=args.direct, errors=errorFlag)
 
 if __name__ == '__main__':
 	main()
